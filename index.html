@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MIDI Protocol Simulator</title>
+    <title>Pro MIDI Simulator</title>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         :root {
@@ -18,26 +18,29 @@
         body {
             background-color: #050505;
             color: white;
-            font-family: sans-serif;
+            font-family: 'Inter', sans-serif;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
             height: 100vh;
             margin: 0;
-            user-select: none; /* Evita que se seleccione texto al hacer clic rápido */
+            user-select: none;
         }
 
+        /* Top Bar */
         .instruction-bar {
             display: flex;
-            gap: 20px;
+            gap: 25px;
             margin-bottom: 20px;
             background: rgba(255,255,255,0.05);
-            padding: 10px 20px;
+            padding: 10px 25px;
             border-radius: 30px;
-            font-size: 12px;
+            font-size: 11px;
             border: 1px solid rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.6);
         }
+        .instruction-bar i { color: var(--accent); vertical-align: middle; }
 
         .container {
             display: flex;
@@ -45,9 +48,42 @@
             background: var(--bg-color);
             padding: 30px;
             border-radius: 12px;
-            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+            align-items: flex-start;
         }
 
+        /* Controls */
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .pitch-slider {
+            appearance: none;
+            width: 120px;
+            height: 8px;
+            background: #111;
+            border-radius: 5px;
+            transform: rotate(-90deg);
+            margin: 60px -40px;
+            cursor: pointer;
+        }
+        .pitch-slider::-webkit-slider-thumb {
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            background: var(--accent);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px var(--accent);
+        }
+
+        /* Keyboard */
         .keyboard {
             display: flex;
             height: 250px;
@@ -60,8 +96,7 @@
         .key {
             cursor: pointer;
             position: relative;
-            transition: transform 0.05s;
-            pointer-events: auto; /* Asegura que capturen el clic */
+            transition: background 0.1s, transform 0.05s;
         }
 
         .key.white {
@@ -79,22 +114,22 @@
             margin-left: -17px;
             margin-right: -17px;
             z-index: 2;
-            border-radius: 0 0 3px 3px;
+            border-radius: 0 0 4px 4px;
         }
 
-        /* Estado activo forzado */
         .key.active {
             background: var(--accent) !important;
-            transform: translateY(2px);
+            transform: translateY(3px);
         }
 
+        /* Terminal */
         .console {
-            width: 350px;
+            width: 380px;
             height: 270px;
             background: var(--terminal-bg);
             border-radius: 6px;
             padding: 15px;
-            font-family: monospace;
+            font-family: 'Courier New', monospace;
             font-size: 11px;
             border: 1px solid rgba(0, 162, 167, 0.3);
             display: flex;
@@ -105,76 +140,141 @@
             flex-grow: 1;
             overflow-y: auto;
             color: var(--text-terminal);
+            scrollbar-width: none;
         }
-
-        .log-entry { margin-bottom: 4px; border-left: 2px solid var(--accent); padding-left: 5px; }
     </style>
 </head>
 <body>
 
 <div class="instruction-bar">
-    <span>TEST: Click the piano keys to see MIDI Data</span>
+    <span><i data-lucide="mouse-pointer-2" size="14"></i> CLICK KEYS TO PLAY</span>
+    <span><i data-lucide="sliders-vertical" size="14"></i> ADJUST PITCH BEND</span>
+    <span><i data-lucide="terminal" size="14"></i> MONITOR MIDI DATA</span>
 </div>
 
 <div class="container">
+    <div class="controls">
+        <span style="font-size: 9px; font-weight: bold;">PITCH</span>
+        <input type="range" id="pitch" class="pitch-slider" min="-200" max = "200" value="0">
+        <i data-lucide="refresh-cw" size="12" style="cursor:pointer; margin-top:50px" onclick="document.getElementById('pitch').value=0"></i>
+    </div>
+
     <div class="keyboard" id="piano"></div>
+
     <div class="console">
-        <div style="color:var(--accent); font-weight:bold; margin-bottom:10px;">> MIDI MONITOR ACTIVE</div>
+        <div style="color:var(--accent); font-weight:bold; font-size:10px; margin-bottom:10px; display:flex; justify-content:space-between;">
+            <span>RAW MIDI STREAM</span>
+            <span id="status-dot" style="color:#ff4444">● IDLE</span>
+        </div>
         <div id="log"></div>
     </div>
 </div>
 
 <script>
-    const logElement = document.getElementById('log');
+    // --- AUDIO ENGINE ---
+    const AudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const activeOscillators = {};
+    let pitchValue = 0; // en cents
+
+    function playTone(freq, noteId) {
+        if (AudioCtx.state === 'suspended') AudioCtx.resume();
+        
+        const osc = AudioCtx.createOscillator();
+        const gain = AudioCtx.createGain();
+        
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, AudioCtx.currentTime);
+        osc.detune.setValueAtTime(pitchValue, AudioCtx.currentTime);
+        
+        gain.gain.setValueAtTime(0.1, AudioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, AudioCtx.currentTime + 1);
+
+        osc.connect(gain);
+        gain.connect(AudioCtx.destination);
+        
+        osc.start();
+        activeOscillators[noteId] = { osc, gain };
+    }
+
+    function stopTone(noteId) {
+        if (activeOscillators[noteId]) {
+            const { osc, gain } = activeOscillators[noteId];
+            gain.gain.setTargetAtTime(0, AudioCtx.currentTime, 0.05);
+            osc.stop(AudioCtx.currentTime + 0.1);
+            delete activeOscillators[noteId];
+        }
+    }
+
+    // --- MIDI LOGIC ---
+    const logEl = document.getElementById('log');
+    const statusDot = document.getElementById('status-dot');
+
+    function logMIDI(msg) {
+        const entry = document.createElement('div');
+        entry.style.marginBottom = '2px';
+        entry.innerHTML = `<span style="color:#444">[${new Date().toLocaleTimeString().split(' ')[0]}]</span> > ${msg}`;
+        logEl.appendChild(entry);
+        logEl.scrollTop = logEl.scrollHeight;
+        if(logEl.childElementCount > 12) logEl.removeChild(logEl.firstChild);
+    }
+
+    // --- INTERFACE ---
     const piano = document.getElementById('piano');
+    const pitchSlider = document.getElementById('pitch');
 
     const notes = [
-        { n: 'C4', v: 60, t: 'white' }, { n: 'C#4', v: 61, t: 'black' },
-        { n: 'D4', v: 62, t: 'white' }, { n: 'D#4', v: 63, t: 'black' },
-        { n: 'E4', v: 64, t: 'white' }, { n: 'F4', v: 65, t: 'white' },
-        { n: 'F#4', v: 66, t: 'black' }, { n: 'G4', v: 67, t: 'white' },
-        { n: 'G#4', v: 68, t: 'black' }, { n: 'A4', v: 69, t: 'white' },
-        { n: 'A#4', v: 70, t: 'black' }, { n: 'B4', v: 71, t: 'white' }
+        { n: 'C4', f: 261.63, v: 60, t: 'white' }, { n: 'C#4', f: 277.18, v: 61, t: 'black' },
+        { n: 'D4', f: 293.66, v: 62, t: 'white' }, { n: 'D#4', f: 311.13, v: 63, t: 'black' },
+        { n: 'E4', f: 329.63, v: 64, t: 'white' }, { n: 'F4', f: 349.23, v: 65, t: 'white' },
+        { n: 'F#4', f: 369.99, v: 66, t: 'black' }, { n: 'G4', f: 392.00, v: 67, t: 'white' },
+        { n: 'G#4', f: 415.30, v: 68, t: 'black' }, { n: 'A4', f: 440.00, v: 69, t: 'white' },
+        { n: 'A#4', f: 466.16, v: 70, t: 'black' }, { n: 'B4', f: 493.88, v: 71, t: 'white' }
     ];
-
-    function addLog(status, name, val, vel) {
-        const entry = document.createElement('div');
-        entry.className = 'log-entry';
-        entry.innerHTML = `> ${status} | Note: ${name} (${val}) | Vel: ${vel}`;
-        logElement.appendChild(entry);
-        logElement.scrollTop = logElement.scrollHeight;
-    }
 
     notes.forEach(note => {
         const key = document.createElement('div');
         key.className = `key ${note.t}`;
         
-        // Usamos eventos de Mouse y Touch para máxima compatibilidad
-        const startAction = (e) => {
+        const start = (e) => {
             e.preventDefault();
+            if(key.classList.contains('active')) return;
             key.classList.add('active');
-            addLog('Note On', note.n, note.v, 100);
+            statusDot.style.color = '#00ffcc';
+            statusDot.innerText = '● ACTIVE';
+            playTone(note.f, note.v);
+            logMIDI(`Note On | Ch: 1 | ${note.n} (${note.v}) | Vel: 100`);
         };
 
-        const stopAction = () => {
+        const stop = () => {
             if(key.classList.contains('active')) {
                 key.classList.remove('active');
-                addLog('Note Off', note.n, note.v, 0);
+                statusDot.style.color = '#ff4444';
+                statusDot.innerText = '● IDLE';
+                stopTone(note.v);
+                logMIDI(`Note Off | Ch: 1 | ${note.n} (${note.v}) | Vel: 0`);
             }
         };
 
-        key.addEventListener('mousedown', startAction);
-        window.addEventListener('mouseup', stopAction); // Window para capturar el release fuera de la tecla
-        
-        // Compatibilidad móvil
-        key.addEventListener('touchstart', startAction);
-        key.addEventListener('touchend', stopAction);
-
+        key.addEventListener('mousedown', start);
+        window.addEventListener('mouseup', stop);
+        key.addEventListener('touchstart', start);
+        key.addEventListener('touchend', stop);
         piano.appendChild(key);
     });
 
-    // Inicializar iconos si la librería cargó
-    if (typeof lucide !== 'undefined') lucide.createIcons();
+    // Pitch Bend Interaction
+    pitchSlider.addEventListener('input', (e) => {
+        pitchValue = parseInt(e.target.value);
+        // Actualizar osciladores activos en tiempo real
+        for (let id in activeOscillators) {
+            activeOscillators[id].osc.detune.setValueAtTime(pitchValue, AudioCtx.currentTime);
+        }
+        // Calcular valor MIDI Pitch Bend (0 a 16383, centro 8192)
+        const midiPitch = Math.floor(((pitchValue + 200) / 400) * 16383);
+        logMIDI(`Pitch Bend | Ch: 1 | Value: ${midiPitch}`);
+    });
+
+    lucide.createIcons();
 </script>
 </body>
 </html>
